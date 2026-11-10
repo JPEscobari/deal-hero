@@ -109,8 +109,11 @@ def product_search(request):
         amz_data = fetch_web_api_data('/v1/scrape/amazon/search', {'query': query})
         ggl_data = fetch_web_api_data('/v1/scrape/google/shopping/search', {'query': query})
                                                      
-        amz_results = amz_data.get('results', {}).get('organic', [])
-        ggl_results = ggl_data.get('results', {}).get('organic', [])
+        amz_res_data = amz_data.get('results', {})
+        amz_results = amz_res_data.get('organic', []) if isinstance(amz_res_data, dict) else (amz_res_data if isinstance(amz_res_data, list) else [])
+        
+        ggl_res_data = ggl_data.get('results', {})
+        ggl_results = ggl_res_data.get('organic', []) if isinstance(ggl_res_data, dict) else (ggl_res_data if isinstance(ggl_res_data, list) else [])
 
         for product in amz_results:
             product['logo_url'] = get_logo_url('Amazon.com')
@@ -162,13 +165,16 @@ def product_search(request):
             )
 
         amz_sorted_products = sorted(valid_amz_products, key=sorting_key, reverse=True)
-        amz_best_product = amz_sorted_products[0]
+        amz_best_product = amz_sorted_products[0] if amz_sorted_products else None
 
         ggl_sorted_products = sorted(valid_ggl_products, key=sorting_key, reverse=True)
         ggl_best_product = ggl_sorted_products[0] if ggl_sorted_products else None
         
-        amz_best_product['rating_width'] = float(amz_best_product['rating']) * 20
-        ggl_best_product['rating_width'] = float(ggl_best_product['rating']) * 20 if ggl_best_product else 0
+        if amz_best_product and amz_best_product.get('rating'):
+            amz_best_product['rating_width'] = float(amz_best_product['rating']) * 20
+
+        if ggl_best_product and ggl_best_product.get('rating'):
+            ggl_best_product['rating_width'] = float(ggl_best_product['rating']) * 20
 
         for product in amz_sorted_products:
             if product.get('rating'):
