@@ -12,7 +12,7 @@
         <img class="medium-icon" src="{% static 'icons/Icon-5-Hero.png' %}" alt="Hero Icon" />
         <h1 class="form-title">Log In</h1>
       </div>
-        <form class="login-form" action="{% url 'home' %}" method="post">
+        <form class="login-form" action="{% url 'login' %}" method="post">
           {% csrf_token %} {{ form.as_p }}
           <input type="hidden" name="next" value="{{ next }}" />
           <button class="btn" type="submit">▶ Log In</button>

@@ -54,14 +54,25 @@ class WishlistView(LoginRequiredMixin, ListView):
             item.product.current_price = latest_price.price if latest_price else None
         return wishlist_items
 
-def fetch_product_data(payload):
-    response = requests.request(
-        'POST',
-        'https://realtime.oxylabs.io/v1/queries',
-        auth=(os.environ.get('OXYLABS_USERNAME'), os.environ.get('OXYLABS_PASSWORD')),
+def fetch_web_api_data(endpoint, payload):
+    api_key = os.environ.get('OXYLABS_WEB_API_KEY')
+    headers = {
+        'Authorization': f'Bearer {api_key}',
+        'Content-Type': 'application/json',
+    }
+    if 'output' not in payload:
+        payload['output'] = ['json']
+    response = requests.post(
+        f'https://webapi.oxylabs.io{endpoint}',
+        headers=headers,
         json=payload,
     )
-    return response.json()
+    if not response.ok:
+        return {}
+    data = response.json()
+    if 'results' in data and len(data['results']) > 0:
+        return data['results'][0].get('json') or data['results'][0].get('content') or {}
+    return {}
 
 def get_logo_url(merchant_name):
     if '.' in merchant_name:
@@ -95,33 +106,11 @@ def product_search(request):
     if request.method == 'POST':
         query = request.POST.get('query')
 
-        amazon_payload = {
-            'source': 'amazon_search',
-            'domain_name': 'usa',
-            'query': query,
-            'start_page': 1,
-            'pages': 1,
-            'parse': True,
-        }
-
-        google_payload = {
-            'source': 'google_shopping_search',
-            'domain': 'com',
-            'query': query,
-            'pages': 1,
-            'parse': True,
-            'geo_location': 'New York,New York,United States',
-            'context': [
-                {'key': 'min_price', 'value': 1},
-                {"key": "results_language", "value": "en"}, 
-            ]
-        }
-
-        amz_data = fetch_product_data(amazon_payload)
-        ggl_data = fetch_product_data(google_payload)
+        amz_data = fetch_web_api_data('/v1/scrape/amazon/search', {'query': query})
+        ggl_data = fetch_web_api_data('/v1/scrape/google/shopping/search', {'query': query})
                                                      
-        amz_results = amz_data['results'][0]['content']['results']['organic']
-        ggl_results = ggl_data['results'][0]['content']['results']['organic']
+        amz_results = amz_data.get('results', {}).get('organic', [])
+        ggl_results = ggl_data.get('results', {}).get('organic', [])
 
         for product in amz_results:
             product['logo_url'] = get_logo_url('Amazon.com')
@@ -196,39 +185,35 @@ def product_search(request):
     return redirect('home')
 
 def fetch_product_details(product_asin, user):
-    payload = {
-        'source': 'amazon_product',
-        'domain': 'com',
-        'query': f'{product_asin}',
-        'parse': True,
-    }
-    response = requests.request(
-        'POST',
-        'https://realtime.oxylabs.io/v1/queries',
-        auth=(os.environ.get('OXYLABS_USERNAME'), os.environ.get('OXYLABS_PASSWORD')),
-        json=payload,
-    )
-    data = response.json()
+    product_data = fetch_web_api_data('/v1/scrape/amazon/product', {'query': f'{product_asin}'})
     
-    product_name = data['results'][0]['content']['product_name'] 
-    asin = data['results'][0]['content']['asin']     
-    category = data['results'][0]['content'].get('category', [{}])[0].get('ladder', [{}])[0].get('name', 'Miscelaneous')        
-    product_url = data['results'][0]['content']['url']        
-    image_url = data['results'][0]['content']['images'][0]        
-    description = data['results'][0]['content']['description']        
-    rating = data['results'][0]['content']['rating']        
-    stock_value = data['results'][0]['content'].get('stock', "in stock")
-    in_stock = stock_value.lower() == 'in stock'
-    price = data['results'][0]['content']['price']        
-    retailer_name = data['results'][0]['content'].get('manufacturer', product_name.split()[0])
-    more_images = data['results'][0]['content'].get('images', [])
-    amazon_choice = data['results'][0]['content'].get('amazon_choice', False)
-    is_prime_eligible = data['results'][0]['content'].get('is_prime_eligible', False)
-    bullet_points = data['results'][0]['content'].get('bullet_points', []).split('\n')
-    reviews_count = data['results'][0]['content'].get('reviews_count', 0)
-    top_review_raw = data['results'][0]['content'].get('top_review', '')
+    product_name = product_data.get('product_name') or product_data.get('title')
+    asin = product_data.get('asin') or product_asin
+    category = product_data.get('category', [{}])[0].get('ladder', [{}])[0].get('name', 'Miscelaneous') if product_data.get('category') else 'Miscelaneous'
+    product_url = product_data.get('url', '')
+    images = product_data.get('images', [])
+    image_url = images[0] if images else product_data.get('url_image', '')
+    description = product_data.get('description', '')
+    rating = product_data.get('rating', 0)
+    stock_value = product_data.get('stock', "in stock")
+    in_stock = stock_value.lower() == 'in stock' if isinstance(stock_value, str) else True
+    price = product_data.get('price', 0)
+    manufacturer = product_data.get('manufacturer')
+    retailer_name = manufacturer if manufacturer else (product_name.split()[0] if product_name else 'Amazon')
+    more_images = images
+    amazon_choice = product_data.get('amazon_choice', product_data.get('is_amazons_choice', False))
+    is_prime_eligible = product_data.get('is_prime_eligible', product_data.get('is_prime', False))
+    raw_bullet_points = product_data.get('bullet_points', [])
+    if isinstance(raw_bullet_points, str):
+        bullet_points = raw_bullet_points.split('\n')
+    elif isinstance(raw_bullet_points, list):
+        bullet_points = raw_bullet_points
+    else:
+        bullet_points = []
+    reviews_count = product_data.get('reviews_count', 0)
+    top_review_raw = product_data.get('top_review', '')
     formatted_review = format_top_review(top_review_raw) if top_review_raw else ''
-    rating_stars_distribution = data['results'][0]['content'].get('rating_stars_distribution', {})
+    rating_stars_distribution = product_data.get('rating_stars_distribution', {})
 
     # The rating_width is the value used to render the star ratings in the templates dynamically ⭐⭐⭐.
     rating_width = float(rating) * 20
@@ -307,48 +292,38 @@ def update_price(request, pk):
     product = Product.objects.get(pk=pk)
     current_price = PriceHistory.objects.filter(product=product).order_by('-timestamp').first()
     
-    payload = {
-        'source': 'amazon_pricing',
-        'domain': 'com',
-        'query': product.asin,
-        'parse': True,
-    }
-    response = requests.request(
-        'POST',
-        'https://realtime.oxylabs.io/v1/queries',
-        auth=(os.environ.get('OXYLABS_USERNAME'), os.environ.get('OXYLABS_PASSWORD')),
-        json=payload,
-    )
-    data = response.json()
-    pricing_info = data['results'][0]['content']['pricing'][0].get('price', current_price)
+    pricing_data = fetch_web_api_data('/v1/scrape/amazon/pricing', {'query': product.asin})
+    pricing_list = pricing_data.get('pricing', [])
     
-    sellers = {}
-    for seller_info in data['results'][0]['content']['pricing']:
-        seller_name = seller_info['seller']
-        sellers[seller_name] = {
-            'seller_name': seller_name,
-            'seller_link': seller_info['seller_link'],
-            'price': seller_info['price'],
-        }
+    if pricing_list:
+        sellers = {}
+        for seller_info in pricing_list:
+            seller_name = seller_info.get('seller') or 'Amazon'
+            sellers[seller_name] = {
+                'seller_name': seller_name,
+                'seller_link': seller_info.get('seller_link') or '',
+                'price': seller_info.get('price') or (current_price.price if current_price else 0),
+            }
 
-    best_seller = min(sellers, key=lambda x: sellers[x]['price'])
-    seller = sellers[best_seller]
+        best_seller = min(sellers, key=lambda x: sellers[x]['price'])
+        seller = sellers[best_seller]
 
-    retailer, created = Retailer.objects.get_or_create(
-        name=seller['seller_name'],
-        defaults={'merchant_url': seller['seller_link']}
-    )
-    
-    PriceHistory.objects.create(
-        product=product,
-        price=seller['price'],
-        retailer=retailer
-    )
+        retailer, created = Retailer.objects.get_or_create(
+            name=seller['seller_name'],
+            defaults={'merchant_url': seller['seller_link']}
+        )
+        
+        PriceHistory.objects.create(
+            product=product,
+            price=seller['price'],
+            retailer=retailer
+        )
     price_history = PriceHistory.objects.filter(product=product).order_by('-timestamp')
+    current_retailer = price_history.first().retailer if price_history.exists() else None
     return render(request, 'htmx/update_price_table.html', {
         'price_history': price_history,
-        'retailer': retailer,
-        })
+        'retailer': current_retailer,
+    })
 
 
 def deals_of_the_day_init(request):
@@ -358,19 +333,8 @@ def deals_of_the_day_init(request):
     if request.method == 'POST':
         category = request.POST.get('category', '')
     
-    payload = {
-        'source': 'amazon_search',
-        'domain': 'com',
-        'domain_name': 'usa',
-        'parse': True,
-        'start_page': 1,
-        'pages': 1,
-        'query': f'deals of the day {category}',
-    }
-    
-    data = fetch_product_data(payload)
-    
-    deals_of_the_day = data['results'][0]['content']['results']['organic']
+    data = fetch_web_api_data('/v1/scrape/amazon/search', {'query': f'deals of the day {category}'})
+    deals_of_the_day = data.get('results', {}).get('organic', [])
     
     valid_deal_products = [
         product for product in deals_of_the_day
@@ -381,7 +345,7 @@ def deals_of_the_day_init(request):
             product.get('title'),
             product.get('url_image'),
             product.get('price_strikethrough'),
-            product.get('reviews_count') > 10,
+            product.get('reviews_count', 0) > 10,
             ])
         ]
     
@@ -409,19 +373,8 @@ def deals_of_the_day(request):
     if request.method == 'POST':
         category = request.POST.get('category', '')
     
-    payload = {
-        'source': 'amazon_search',
-        'domain': 'com',
-        'domain_name': 'usa',
-        'parse': True,
-        'start_page': 1,
-        'pages': 1,
-        'query': f'deals of the day {category}',
-    }
-    
-    data = fetch_product_data(payload)
-    
-    deals_of_the_day = data['results'][0]['content']['results']['organic']
+    data = fetch_web_api_data('/v1/scrape/amazon/search', {'query': f'deals of the day {category}'})
+    deals_of_the_day = data.get('results', {}).get('organic', [])
     
     valid_deal_products = [
         product for product in deals_of_the_day
@@ -432,7 +385,7 @@ def deals_of_the_day(request):
             product.get('title'),
             product.get('url_image'),
             product.get('price_strikethrough'),
-            product.get('reviews_count') > 10,
+            product.get('reviews_count', 0) > 10,
             ])
         ]
     
@@ -452,4 +405,5 @@ def deals_of_the_day(request):
         
     sorted_deals = sorted(valid_deal_products, key=lambda x: x['discount'], reverse=True)
     return render(request, 'home.html', {'deals_of_the_day': sorted_deals})
+
 
