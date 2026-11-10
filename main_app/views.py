@@ -119,9 +119,12 @@ def product_search(request):
             merchant_name = product['merchant']['name']
             product['logo_url'] = get_logo_url(merchant_name)
 
-        # Add the cleaned merchant name to each Google Shopping product. (Remove the domain from the merchant name)
+        # Normalize Google Shopping thumbnails and add cleaned merchant name
         for product in ggl_results:
-             product['cleaned_merchant_name'] = clean_merchant_name(product['merchant']['name'])
+            thumb = product.get('thumbnail')
+            if thumb and not thumb.startswith('data:') and not thumb.startswith('http'):
+                product['thumbnail'] = f"data:image/jpeg;base64,{thumb}"
+            product['cleaned_merchant_name'] = clean_merchant_name(product['merchant']['name'])
 
         valid_amz_products = [
             product for product in amz_results
